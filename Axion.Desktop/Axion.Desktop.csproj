@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Axion</AssemblyName>
+    <RootNamespace>Axion.Desktop</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WebView2 is optional for now; uncomment when you add embedded UI -->
+    <!-- <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" /> -->
+    <!-- Squirrel.Windows v2; wire up later (Update App button) -->
+    <!-- <PackageReference Include="Clowd.Squirrel" Version="2.*" /> -->
+  </ItemGroup>
+
+</Project>

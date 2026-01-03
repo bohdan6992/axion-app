@@ -1,0 +1,53 @@
+<Window x:Class="Axion.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Axion" Width="520" Height="420"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Vertical" Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="Axion LOCAL"/>
+            <TextBlock x:Name="StatusText" Margin="0,6,0,0" Text="Status: Not logged in"/>
+            <TextBlock x:Name="ApiText" Margin="0,2,0,0" Text="API: stopped"/>
+            <TextBlock x:Name="VersionText" Margin="0,2,0,0" Text="Version: unknown"/>
+            <TextBlock x:Name="SignalsText" Margin="0,2,0,0" Text="Signals: unknown"/>
+        </StackPanel>
+
+        <GroupBox Header="Login" Grid.Row="1" Margin="0,0,0,12">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Margin="0,0,10,8" VerticalAlignment="Center" Text="Email"/>
+                <TextBox x:Name="EmailBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,0,10,8" VerticalAlignment="Center" Text="Password"/>
+                <PasswordBox x:Name="PasswordBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8"/>
+
+                <Button x:Name="LoginBtn" Grid.Row="2" Grid.Column="1" Height="30" Content="Login" Click="Login_Click"/>
+            </Grid>
+        </GroupBox>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button x:Name="StartApiBtn" Width="110" Height="30" Margin="0,0,8,0" Content="Start API" Click="StartApi_Click"/>
+            <Button x:Name="StopApiBtn" Width="110" Height="30" Margin="0,0,8,0" Content="Stop API" Click="StopApi_Click"/>
+            <Button x:Name="OpenSwaggerBtn" Width="120" Height="30" Margin="0,0,8,0" Content="Open Swagger" Click="OpenSwagger_Click"/>
+            <Button x:Name="UpdateAppBtn" Width="120" Height="30" Content="Update App" Click="UpdateApp_Click"/>
+        </StackPanel>
+
+        <TextBox x:Name="LogBox" Grid.Row="3" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+    </Grid>
+</Window>

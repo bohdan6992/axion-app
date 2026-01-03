@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      TRAP (TradingAppAPI.dll) optional reference:
+      - Default: enabled, but only if DLL exists.
+      - You can force enable/disable:
+          dotnet build -p:UseTRAP=true
+          dotnet build -p:UseTRAP=false
+    -->
+    <UseTRAP Condition="'$(UseTRAP)'==''">true</UseTRAP>
+
+    <!-- Default TRAP path (can be overridden: -p:TRAP_DllPath=...) -->
+    <TRAP_DllPath Condition="'$(TRAP_DllPath)'==''">C:\Program Files (x86)\Datum\TradingAppAPI.dll</TRAP_DllPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.22" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="Microsoft.Windows.Compatibility" Version="10.0.0" />
+
+    <!-- AUTH / Identity / SQLite / JWT -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.22" />
+    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.22" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.22" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.22">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- Optional TRAP reference: only if enabled AND DLL exists -->
+  <ItemGroup Condition="'$(UseTRAP)'=='true' AND Exists('$(TRAP_DllPath)')">
+    <Reference Include="TradingAppAPI">
+      <HintPath>$(TRAP_DllPath)</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- If TRAP is enabled but DLL missing, print a warning (do not fail build) -->
+  <Target Name="WarnIfTrapMissing"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(UseTRAP)'=='true' AND !Exists('$(TRAP_DllPath)')">
+    <Warning Text="TradingAppAPI.dll not found at '$(TRAP_DllPath)'. Building WITHOUT TRAP. To disable this warning: dotnet build -p:UseTRAP=false" />
+  </Target>
+
+  <ItemGroup>
+    <!-- Universe: only a list of tickers -->
+    <None Include="universe.csv" CopyToOutputDirectory="PreserveNewest" />
+
+    <!-- Static strategy data bundled for dev (runtime may read from %AppData%\Axion\signals) -->
+    <None Include="signals\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
