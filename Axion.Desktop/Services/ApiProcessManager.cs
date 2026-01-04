@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +15,9 @@ namespace Axion.Desktop.Services
         public bool IsRunning => _proc is { HasExited: false };
         public int Port { get; }
         public string BaseUrl => $"http://127.0.0.1:{Port}";
+
+        // Optional: expose last health error for UI/logs
+        public string? LastHealthError { get; private set; }
 
         public ApiProcessManager(int port = 5127)
         {
@@ -33,7 +37,6 @@ namespace Axion.Desktop.Services
             if (!File.Exists(apiExe) && !File.Exists(apiDll))
                 throw new FileNotFoundException("TradingBridgeApi not found in C:\\Axion\\App", apiExe);
 
-            // signals root у %AppData%\Axion\signals — віддаємо через env (або args, якщо ви так зробите в API на Етапі 2)
             var psi = new ProcessStartInfo
             {
                 FileName = File.Exists(apiExe) ? apiExe : "dotnet",
@@ -59,6 +62,8 @@ namespace Axion.Desktop.Services
 
             _proc = Process.Start(psi);
             if (_proc is null) throw new InvalidOperationException("Failed to start TradingBridgeApi process.");
+
+            LastHealthError = null;
         }
 
         public void Stop()
@@ -83,6 +88,9 @@ namespace Axion.Desktop.Services
             }
         }
 
+        /// <summary>
+        /// Wait until API responds 200 OK on /health.
+        /// </summary>
         public async Task<bool> WaitUntilHealthyAsync(TimeSpan timeout, CancellationToken ct)
         {
             var stopAt = DateTime.UtcNow + timeout;
@@ -91,17 +99,54 @@ namespace Axion.Desktop.Services
             while (DateTime.UtcNow < stopAt)
             {
                 ct.ThrowIfCancellationRequested();
+
                 try
                 {
-                    // health endpoint додамо в API на Етапі 2, але на старті можна пінгувати /
-                    var resp = await http.GetAsync($"{BaseUrl}/", ct);
-                    if (resp.IsSuccessStatusCode) return true;
+                    var resp = await http.GetAsync($"{BaseUrl}/health", ct);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        LastHealthError = null;
+                        return true;
+                    }
+
+                    LastHealthError = $"GET /health -> {(int)resp.StatusCode} {resp.ReasonPhrase}";
                 }
-                catch { /* ignore */ }
+                catch (Exception ex)
+                {
+                    LastHealthError = ex.Message;
+                }
 
                 await Task.Delay(250, ct);
             }
+
             return false;
+        }
+
+        /// <summary>
+        /// Optional helper: read API version from /version.
+        /// Returns null if unavailable.
+        /// </summary>
+        public async Task<string?> TryGetVersionAsync(CancellationToken ct)
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+
+            try
+            {
+                var resp = await http.GetAsync($"{BaseUrl}/version", ct);
+                if (!resp.IsSuccessStatusCode) return null;
+
+                var json = await resp.Content.ReadAsStringAsync(ct);
+
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String)
+                    return v.GetString();
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }

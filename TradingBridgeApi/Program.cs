@@ -1,4 +1,5 @@
 // Program.cs
+using System.Reflection;
 using System.Text;
 
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -8,16 +9,14 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Options;
 
 using TradingBridgeApi;
 using TradingBridgeApi.Auth;
-
 using TradingBridgeApi.Services.Live;
-
 using TradingBridgeApi.Services.Strategy.Arbitrage;
 using TradingBridgeApi.Services.Strategy.OpenDoor;
 using TradingBridgeApi.Services.Strategy.Chrono;
-
 using TradingBridgeApi.StrategyCommon;
 using TradingBridgeApi.StrategyCommon.Signals;
 
@@ -206,9 +205,58 @@ if (Directory.Exists(wwwroot))
 
 app.MapControllers();
 
+/* ===================== APP META (VERSION + HEALTH) ===================== */
+
+static string GetAppVersion()
+{
+    // Prefer informational version (supports tags/commits)
+    var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
+
+    var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+    if (!string.IsNullOrWhiteSpace(info))
+        return info.Trim();
+
+    return asm.GetName().Version?.ToString() ?? "unknown";
+}
+
+// Version endpoint (Launcher can read this to display Version instead of "unknown")
+app.MapGet("/version", () =>
+{
+    return Results.Ok(new
+    {
+        name = "TradingBridgeApi",
+        version = GetAppVersion(),
+        env = app.Environment.EnvironmentName,
+        ts = DateTimeOffset.UtcNow
+    });
+});
+
+// Health endpoint (Launcher should ping this; always returns 200 if app is alive)
+app.MapGet("/health", (IOptions<GitHubSignalsOptions> gh) =>
+{
+    var o = gh.Value;
+
+    // We do not perform remote GitHub fetch here (keep it fast/robust).
+    // Just report whether token exists and what repo is configured.
+    return Results.Ok(new
+    {
+        status = "ok",
+        version = GetAppVersion(),
+        env = app.Environment.EnvironmentName,
+        ts = DateTimeOffset.UtcNow,
+        signals = new
+        {
+            owner = o.Owner,
+            repo = o.Repo,
+            branch = o.Branch,
+            hasToken = !string.IsNullOrWhiteSpace(o.Token)
+        }
+    });
+});
+
 /* ===================== DEBUG HELPERS ===================== */
 
-app.MapGet("/__gh", (Microsoft.Extensions.Options.IOptions<TradingBridgeApi.Signals.GitHubSignalsOptions> opt) =>
+app.MapGet("/__gh", (IOptions<GitHubSignalsOptions> opt) =>
 {
     var o = opt.Value;
     return Results.Ok(new
@@ -261,7 +309,7 @@ app.MapGet("/__routes", (IEnumerable<EndpointDataSource> sources) =>
 /// Usage:
 ///   /__sig?path=chrono/onefile.jsonl
 /// </summary>
-app.MapGet("/__sig", async (string path, TradingBridgeApi.Signals.ISignalsSource src, CancellationToken ct) =>
+app.MapGet("/__sig", async (string path, ISignalsSource src, CancellationToken ct) =>
 {
     try
     {
@@ -295,7 +343,7 @@ app.MapGet("/__sig", async (string path, TradingBridgeApi.Signals.ISignalsSource
 /// Usage:
 ///   /__sighead?path=chrono/onefile.jsonl&lines=3
 /// </summary>
-app.MapGet("/__sighead", async (string path, int lines, TradingBridgeApi.Signals.ISignalsSource src, CancellationToken ct) =>
+app.MapGet("/__sighead", async (string path, int lines, ISignalsSource src, CancellationToken ct) =>
 {
     lines = Math.Clamp(lines, 1, 20);
     path = (path ?? "").Trim().TrimStart('/');
