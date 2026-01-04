@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -61,9 +62,12 @@ public sealed class GitHubReleaseAppUpdater
         if (asset is null)
             throw new InvalidOperationException($"Release {tag} has no asset named '{_assetName}'.");
 
+        if (string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
+            throw new InvalidOperationException($"Asset '{_assetName}' has no browser_download_url (GitHub API parse failed).");
+
         // 4) Download to Cache
         Directory.CreateDirectory(install.CacheDir);
-        var zipPath = Path.Combine(install.CacheDir, $"{_assetName.Replace('.','_')}_{tag}.zip");
+        var zipPath = Path.Combine(install.CacheDir, $"{_assetName.Replace('.', '_')}_{tag}.zip");
         progress?.Report("Downloading release asset...");
         await DownloadAsync(asset.BrowserDownloadUrl!, zipPath, token, progress, ct);
 
@@ -138,8 +142,10 @@ public sealed class GitHubReleaseAppUpdater
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AxionLauncher/1.0");
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+
+        // GitHub accepts either "token" or "Bearer" for PAT; keep Bearer since you used it.
         if (!string.IsNullOrWhiteSpace(token))
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
 
         var url = $"https://api.github.com/repos/{_owner}/{_repo}/releases/latest";
         using var resp = await http.GetAsync(url, ct);
@@ -158,8 +164,9 @@ public sealed class GitHubReleaseAppUpdater
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AxionLauncher/1.0");
+
         if (!string.IsNullOrWhiteSpace(token))
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
 
         using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!resp.IsSuccessStatusCode)
@@ -239,7 +246,9 @@ public sealed class GitHubReleaseAppUpdater
     {
         Directory.CreateDirectory(install.CacheDir);
         var p = Path.Combine(install.CacheDir, "app_version.json");
-        File.WriteAllText(p, JsonSerializer.Serialize(new { tag, updatedUtc = DateTime.UtcNow.ToString("O") }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(p, JsonSerializer.Serialize(
+            new { tag, updatedUtc = DateTime.UtcNow.ToString("O") },
+            new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static string? TryReadInstalledTag(InstallLayout install)
@@ -263,16 +272,22 @@ public sealed class GitHubReleaseAppUpdater
         File.WriteAllText(Path.Combine(install.CacheDir, "last_backup.txt"), backupDir);
     }
 
-    // DTOs (minimal)
+    // DTOs (minimal) — IMPORTANT: map snake_case JSON properties
     private sealed class ReleaseDto
     {
+        [JsonPropertyName("tag_name")]
         public string? TagName { get; set; }
+
+        [JsonPropertyName("assets")]
         public AssetDto[]? Assets { get; set; }
     }
 
     private sealed class AssetDto
     {
+        [JsonPropertyName("name")]
         public string? Name { get; set; }
+
+        [JsonPropertyName("browser_download_url")]
         public string? BrowserDownloadUrl { get; set; }
     }
 }
