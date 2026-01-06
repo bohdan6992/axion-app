@@ -162,6 +162,48 @@ public sealed class StrategyJoiner
             it.DevLsig = it.ZapLsigma;
 
             // ----------------------------
+            // 5.5) sigma gate (MODE=ALL) - 1:1 with old bridge
+            //
+            // non-print: abs(zap*sigma) >= 0.1
+            // print: abs(zap*sigma) >= best.PrintMedianPos/Neg (fallback 0.1)
+            // ----------------------------
+            {
+                const decimal MIN_SIGMA_ABS_OTHER = 0.1m;
+                const decimal FALLBACK_PRINT_POS = 0.1m;
+                const decimal FALLBACK_PRINT_NEG = 0.1m;
+
+                var cls = (q.Class ?? "global").Trim().ToLowerInvariant();
+                var isPrint = cls == "print";
+
+                decimal thrPosAbs;
+                decimal thrNegAbs;
+
+                if (!isPrint)
+                {
+                    thrPosAbs = MIN_SIGMA_ABS_OTHER;
+                    thrNegAbs = MIN_SIGMA_ABS_OTHER;
+                }
+                else
+                {
+                    thrPosAbs = best?.PrintMedianPos ?? FALLBACK_PRINT_POS;
+                    thrNegAbs = Math.Abs(best?.PrintMedianNeg ?? FALLBACK_PRINT_NEG);
+                }
+
+                it.PrintSigmaPos = thrPosAbs;
+                it.PrintSigmaNeg = thrNegAbs;
+
+                it.ShortSigmaOk =
+                    it.ShortCandidate &&
+                    it.ZapSsigma.HasValue &&
+                    Math.Abs(it.ZapSsigma.Value) >= thrPosAbs;
+
+                it.LongSigmaOk =
+                    it.LongCandidate &&
+                    it.ZapLsigma.HasValue &&
+                    Math.Abs(it.ZapLsigma.Value) >= thrNegAbs;
+            }
+
+            // ----------------------------
             // 6) ranges checks (if present)
             // ----------------------------
             var devPos = best?.DevPos ?? new List<BestRangeDto>();
@@ -183,11 +225,13 @@ public sealed class StrategyJoiner
             it.BenchDevShort = it.BidBench;
             it.BenchDevLong = it.AskBench;
 
+            // legacy TOP bench gate uses ABS ranges (1:1 with old StrategySignalService)
             if (it.BenchDevShort.HasValue && benchPos.Count > 0)
-                it.ShortBenchOk = InAnyRange(it.BenchDevShort.Value, benchPos);
+                it.ShortBenchOk = InAnyRangeAbs(it.BenchDevShort.Value, benchPos);
 
             if (it.BenchDevLong.HasValue && benchNeg.Count > 0)
-                it.LongBenchOk = InAnyRange(it.BenchDevLong.Value, benchNeg);
+                it.LongBenchOk = InAnyRangeAbs(it.BenchDevLong.Value, benchNeg);
+
 
             it.BenchRefDev = it.BenchDevShort ?? it.BenchDevLong;
 

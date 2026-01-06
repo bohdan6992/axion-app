@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using TradingBridgeApi.StrategyCommon.Dtos;
 
 namespace TradingBridgeApi.StrategyCommon.Signals;
@@ -9,18 +12,21 @@ public sealed class TopModePolicy
         if (!string.Equals(q.Mode, "top", StringComparison.OrdinalIgnoreCase))
             return items;
 
-        // Mode=top means:
-        // - items MUST already be marked as passing top gates by strategy-specific join logic
-        // We rely on item.TopOk (or a similar flag) if you have it;
-        // otherwise use item.BestRangesOk booleans that are already computed.
+        return items.Where(IsTopOk);
+    }
 
-        return items.Where(x =>
-        {
-            // safest: if any of these exists, keep it.
-            if (x.ShortRangesOk == true || x.LongRangesOk == true) return true;
+    private static bool IsTopOk(SignalItemDto x)
+    {
+        // TOP (legacy arbitrage semantics):
+        // require sigma gate + dev ranges + bench ranges (strict)
+        var shortOk = x.ShortSigmaOk == true
+                   && x.ShortRangesOk == true
+                   && x.ShortBenchOk == true;
 
-            // if you add explicit TopOk in the DTO later — plug it here.
-            return false;
-        });
+        var longOk  = x.LongSigmaOk == true
+                   && x.LongRangesOk == true
+                   && x.LongBenchOk == true;
+
+        return shortOk || longOk;
     }
 }

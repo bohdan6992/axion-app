@@ -20,6 +20,9 @@ using TradingBridgeApi.Services.Strategy.Chrono;
 using TradingBridgeApi.StrategyCommon;
 using TradingBridgeApi.StrategyCommon.Signals;
 
+// ✅ NEW: handlers + registry (Arbitrage-only for now)
+using TradingBridgeApi.StrategyCommon.Handlers;
+
 // ✅ GitHub signals source
 using TradingBridgeApi.Signals;
 
@@ -167,9 +170,16 @@ builder.Services.AddSingleton<ArbitrageFilesService>();
 builder.Services.AddSingleton<OpenDoorFilesService>();
 builder.Services.AddSingleton<ChronoFilesService>();
 
-// ---- COMMON (signals join + eligibility + signal service) ----
+// ---- COMMON (signals join + eligibility + top + handlers + registry + signal service) ----
 builder.Services.AddSingleton<StrategyJoiner>();
 builder.Services.AddSingleton<EligibilityPolicy>();
+builder.Services.AddSingleton<TopModePolicy>(); // ✅ already used inside arbitrage handler
+
+// ✅ NEW: handler pattern (Arbitrage-only for now)
+builder.Services.AddSingleton<IStrategySignalsHandler, ArbitrageSignalsHandler>();
+builder.Services.AddSingleton<StrategyHandlerRegistry>();
+
+// Router service (now depends only on registry)
 builder.Services.AddSingleton<StrategySignalService>();
 
 var app = builder.Build();
