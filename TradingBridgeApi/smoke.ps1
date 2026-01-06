@@ -1,5 +1,5 @@
 param(
-  [string]$Base = "http://127.0.0.1:5127",
+  [string]$Base = "http://localhost:5197",
   [string]$GhOwner = "bohdan6992",
   [string]$GhRepo  = "axion-signals",
   [string]$GhBranch = "main"

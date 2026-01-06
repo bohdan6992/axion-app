@@ -26,10 +26,10 @@ The launcher detects `C:\Axion\` automatically based on its own location
 
 Launcher starts TradingBridgeApi on the old port **5127** and forces **Development** to always show Swagger:
 
-- `ASPNETCORE_URLS=http://127.0.0.1:5127`
+- `ASPNETCORE_URLS=http://localhost:5197`
 - `ASPNETCORE_ENVIRONMENT=Development`
 
-Swagger: `http://127.0.0.1:5127/swagger`
+Swagger: `http://localhost:5197/swagger`
 
 ## Update App (APP-A)
 
