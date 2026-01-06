@@ -135,16 +135,17 @@ public sealed class StrategyJoiner
             if (it.BidStock.HasValue && it.STruePrice.HasValue)
                 it.ZapS = it.BidStock.Value - it.STruePrice.Value;
 
+            // ✅ ETALON SIGN: ZapL = AskStock - LTruePrice  (long when ZapL < 0)
             if (it.LTruePrice.HasValue && it.AskStock.HasValue)
-                it.ZapL = it.LTruePrice.Value - it.AskStock.Value;
+                it.ZapL = it.AskStock.Value - it.LTruePrice.Value;
 
             it.ShortCandidate =
                 it.BidStock.HasValue && it.STruePrice.HasValue &&
                 it.BidStock.Value > it.STruePrice.Value;
 
+            // ✅ ETALON: LongCandidate = ZapL < 0
             it.LongCandidate =
-                it.LTruePrice.HasValue && it.AskStock.HasValue &&
-                it.LTruePrice.Value > it.AskStock.Value;
+                it.ZapL.HasValue && it.ZapL.Value < 0;
 
             // ----------------------------
             // 5) normalize by sigma
@@ -232,8 +233,40 @@ public sealed class StrategyJoiner
             if (it.BenchDevLong.HasValue && benchNeg.Count > 0)
                 it.LongBenchOk = InAnyRangeAbs(it.BenchDevLong.Value, benchNeg);
 
-
             it.BenchRefDev = it.BenchDevShort ?? it.BenchDevLong;
+
+            // ----------------------------
+            // 6.5) Direction (1:1 with old bridge)
+            // - mode=all: based on SigmaOk
+            // - mode=top: SigmaOk + RangesOk + BenchOk (strict)
+            // If both sides ok -> choose by larger abs(zap/sigma).
+            // ----------------------------
+            {
+                var mode = (q.Mode ?? "all").Trim().ToLowerInvariant();
+                var wantTop = mode == "top";
+
+                bool shortOk = (it.ShortSigmaOk ?? false);
+                bool longOk = (it.LongSigmaOk ?? false);
+
+                if (wantTop)
+                {
+                    shortOk = shortOk && (it.ShortRangesOk ?? false) && (it.ShortBenchOk ?? false);
+                    longOk = longOk && (it.LongRangesOk ?? false) && (it.LongBenchOk ?? false);
+                }
+
+                if (shortOk && !longOk) it.Direction = "short";
+                else if (!shortOk && longOk) it.Direction = "long";
+                else if (shortOk && longOk)
+                {
+                    var s = it.ZapSsigma.HasValue ? Math.Abs(it.ZapSsigma.Value) : 0m;
+                    var l = it.ZapLsigma.HasValue ? Math.Abs(it.ZapLsigma.Value) : 0m;
+                    it.Direction = (s >= l) ? "short" : "long";
+                }
+                else
+                {
+                    it.Direction = "none";
+                }
+            }
 
             // ----------------------------
             // 7) LIVE flags
