@@ -1,5 +1,6 @@
 // Program.cs
 using System.Reflection;
+using System.Security.Claims;
 using System.Text;
 
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -8,15 +9,15 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 
 using TradingBridgeApi;
 using TradingBridgeApi.Auth;
 using TradingBridgeApi.Services.Live;
 using TradingBridgeApi.Services.Strategy.Arbitrage;
-using TradingBridgeApi.Services.Strategy.OpenDoor;
 using TradingBridgeApi.Services.Strategy.Chrono;
+using TradingBridgeApi.Services.Strategy.OpenDoor;
 using TradingBridgeApi.StrategyCommon;
 using TradingBridgeApi.StrategyCommon.Signals;
 
@@ -127,6 +128,7 @@ builder.Services
     .AddJwtBearer(opt =>
     {
         opt.RequireHttpsMetadata = false; // localhost over http
+
         opt.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -136,7 +138,14 @@ builder.Services
 
             ValidIssuer = jwtIssuer,
             ValidAudience = jwtAudience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+
+            // ✅ IMPORTANT: ensure roles + name resolve consistently
+            RoleClaimType = ClaimTypes.Role,
+            NameClaimType = ClaimTypes.Name,
+
+            // ✅ optional but recommended: avoid implicit 5-min clock skew
+            ClockSkew = TimeSpan.Zero
         };
     });
 
