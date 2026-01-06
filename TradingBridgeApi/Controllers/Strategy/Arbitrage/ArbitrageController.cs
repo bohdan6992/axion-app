@@ -1,7 +1,8 @@
 // Controllers/Strategy/Arbitrage/ArbitrageController.cs
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+
+// using Microsoft.AspNetCore.Authentication.JwtBearer;
+// using Microsoft.AspNetCore.Authorization;
 
 using TradingBridgeApi.Services.Strategy.Arbitrage;
 using TradingBridgeApi.StrategyCommon;
@@ -10,9 +11,8 @@ using TradingBridgeApi.StrategyCommon.Dtos;
 namespace TradingBridgeApi;
 
 [ApiController]
-// ✅ Force JWT for API (avoid cookie/Identity redirects & scheme ambiguity)
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
-// ✅ Keep absolute route (your choice; works fine)
+// ✅ AUTH DISABLED (public API for local/dev)
+// [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
 [Route("/api/arbitrage")]
 public sealed class ArbitrageController : ControllerBase
 {
