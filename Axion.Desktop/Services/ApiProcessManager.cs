@@ -14,12 +14,15 @@ namespace Axion.Desktop.Services
 
         public bool IsRunning => _proc is { HasExited: false };
         public int Port { get; }
-        public string BaseUrl => $"http://127.0.0.1:{Port}";
+
+        // ✅ Local API base URL (uses the same Port you run the API on)
+        public string BaseUrl => $"http://localhost:{Port}";
 
         // Optional: expose last health error for UI/logs
         public string? LastHealthError { get; private set; }
 
-        public ApiProcessManager(int port = 5127)
+        // ✅ Default to the requested local port
+        public ApiProcessManager(int port = 5197)
         {
             Port = port;
         }
@@ -51,7 +54,7 @@ namespace Axion.Desktop.Services
                 psi.ArgumentList.Add(apiDll);
             }
 
-            // Old port + always-swagger (Development)
+            // ✅ Bind API to the same BaseUrl we will call
             psi.Environment["ASPNETCORE_URLS"] = BaseUrl;
             psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
 
