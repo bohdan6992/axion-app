@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using TradingBridgeApi.Services.Strategy.Chrono;
 using TradingBridgeApi.StrategyCommon.Dtos;
 using TradingBridgeApi.StrategyCommon.Signals;
+using TradingBridgeApi.StrategyCommon;
+
 
 namespace TradingBridgeApi.Controllers;
 
