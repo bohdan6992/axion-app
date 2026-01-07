@@ -21,7 +21,7 @@ using TradingBridgeApi.Services.Strategy.OpenDoor;
 using TradingBridgeApi.StrategyCommon;
 using TradingBridgeApi.StrategyCommon.Signals;
 
-// ✅ NEW: handlers + registry (Arbitrage-only for now)
+// ✅ handlers + registry
 using TradingBridgeApi.StrategyCommon.Handlers;
 
 // ✅ GitHub signals source
@@ -184,9 +184,12 @@ builder.Services.AddSingleton<TopModePolicy>();
 
 // ✅ Handlers + registry + router
 builder.Services.AddSingleton<IStrategySignalsHandler, ArbitrageSignalsHandler>();
-// (optional later)
-// builder.Services.AddSingleton<IStrategySignalsHandler, ChronoSignalsHandler>();
-// builder.Services.AddSingleton<IStrategySignalsHandler, OpenDoorSignalsHandler>();
+
+// ✅ IMPORTANT: to avoid "unknown strategy" for /api/chrono/* and /api/opendoor/* signals,
+// you must register handlers for them too (can be stubs for now).
+// If these classes don't exist yet, create stubs or comment these out temporarily.
+builder.Services.AddSingleton<IStrategySignalsHandler, ChronoSignalsHandler>();
+builder.Services.AddSingleton<IStrategySignalsHandler, OpenDoorSignalsHandler>();
 
 builder.Services.AddSingleton<StrategyHandlerRegistry>();
 builder.Services.AddSingleton<StrategySignalService>();
@@ -222,81 +225,7 @@ if (Directory.Exists(wwwroot))
     app.UseStaticFiles();
 }
 
-/* =========================================================
-   ✅ LEGACY BRIDGE (NO redirect)
-   /api/arbitrage/**  -> /api/strategy/arbitrage/**
-   /api/chrono/**     -> /api/strategy/chrono/**
-   /api/opendoor/**   -> /api/strategy/opendoor/**
-   Keeps: method, query, headers, body, status-code, URL in browser
-   ========================================================= */
-app.Use(async (ctx, next) =>
-{
-    // Prevent double-rewrite if something re-enters pipeline
-    if (ctx.Items.ContainsKey("__legacy_bridge_done"))
-    {
-        await next();
-        return;
-    }
-
-    // Only legacy (do not touch already-new endpoints)
-    if (ctx.Request.Path.StartsWithSegments("/api/strategy"))
-    {
-        await next();
-        return;
-    }
-
-    static bool Match(HttpContext c, string legacyPrefix, out PathString remainder)
-        => c.Request.Path.StartsWithSegments(new PathString(legacyPrefix), out remainder);
-
-    if (Match(ctx, "/api/arbitrage", out var rem))
-    {
-        var old = ctx.Request.Path;
-        var oldBase = ctx.Request.PathBase;
-
-        ctx.Items["__legacy_bridge_done"] = true;
-        ctx.Request.PathBase = PathString.Empty;
-        ctx.Request.Path = new PathString("/api/strategy/arbitrage") + rem;
-
-        try { await next(); }
-        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
-
-        return;
-    }
-
-    if (Match(ctx, "/api/chrono", out rem))
-    {
-        var old = ctx.Request.Path;
-        var oldBase = ctx.Request.PathBase;
-
-        ctx.Items["__legacy_bridge_done"] = true;
-        ctx.Request.PathBase = PathString.Empty;
-        ctx.Request.Path = new PathString("/api/strategy/chrono") + rem;
-
-        try { await next(); }
-        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
-
-        return;
-    }
-
-    if (Match(ctx, "/api/opendoor", out rem))
-    {
-        var old = ctx.Request.Path;
-        var oldBase = ctx.Request.PathBase;
-
-        ctx.Items["__legacy_bridge_done"] = true;
-        ctx.Request.PathBase = PathString.Empty;
-        ctx.Request.Path = new PathString("/api/strategy/opendoor") + rem;
-
-        try { await next(); }
-        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
-
-        return;
-    }
-
-    await next();
-});
-
-// ✅ Controllers (must be AFTER bridge middleware)
+// ✅ Controllers
 app.MapControllers();
 
 /* ===================== APP META (VERSION + HEALTH) ===================== */

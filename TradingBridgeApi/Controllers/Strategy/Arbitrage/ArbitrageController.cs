@@ -8,13 +8,14 @@ using TradingBridgeApi.StrategyCommon.Dtos;
 namespace TradingBridgeApi;
 
 [ApiController]
-[Route("/api/strategy/arbitrage")]
+// ✅ NEW: canonical routes (no /strategy)
+[Route("/api/arbitrage")]
 public sealed class ArbitrageController : ControllerBase
 {
     // =========================
     // SUMMARY
     // =========================
-    // GET /api/strategy/arbitrage/summary
+    // GET /api/arbitrage/summary
     [HttpGet("summary")]
     public async Task<IActionResult> GetSummary(
         [FromQuery] string? q,
@@ -37,7 +38,7 @@ public sealed class ArbitrageController : ControllerBase
     // =========================
     // TICKER (onefile)
     // =========================
-    // GET /api/strategy/arbitrage/ticker/{ticker}
+    // GET /api/arbitrage/ticker/{ticker}
     [HttpGet("ticker/{ticker}")]
     public async Task<IActionResult> GetTicker(
         string ticker,
@@ -65,7 +66,7 @@ public sealed class ArbitrageController : ControllerBase
     // =========================
     // BEST PARAMS
     // =========================
-    // GET /api/strategy/arbitrage/best-params/{ticker}
+    // GET /api/arbitrage/best-params/{ticker}
     [HttpGet("best-params/{ticker}")]
     public async Task<IActionResult> GetBestParams(
         string ticker,
@@ -93,12 +94,13 @@ public sealed class ArbitrageController : ControllerBase
     // =========================
     // SIGNALS (canonical)
     // =========================
-    // GET /api/strategy/arbitrage/signals?class=print&type=any&mode=top&tickers=AAPL,MSFT&limit=50&offset=0&minRate=0.3&minTotal=3
-    [HttpGet("signals")]
+    // ✅ NEW:
+    // GET /api/arbitrage/signals/{cls}/{type}/{mode}?tickers=AAPL,MSFT&limit=50&offset=0&minRate=0.3&minTotal=3
+    [HttpGet("signals/{cls}/{type}/{mode}")]
     public async Task<IActionResult> GetSignals(
-        [FromQuery(Name = "class")] string? cls,
-        [FromQuery] string? type,
-        [FromQuery] string? mode,
+        [FromRoute] string cls,
+        [FromRoute] string type,
+        [FromRoute] string mode,
         [FromQuery] string? tickers,
         [FromQuery] int? limit,
         [FromQuery] int? offset,
