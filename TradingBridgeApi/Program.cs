@@ -42,12 +42,14 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// CORS
+// ===================== CORS =====================
+// ✅ Allow your Vercel site(s) + local dev
 var allowedOrigins = new[]
 {
     "http://localhost:5173",
     "http://localhost:3000",
     "https://devion.vercel.app",
+    "https://devion-eight.vercel.app",
 };
 
 builder.Services.AddCors(options =>
@@ -57,6 +59,9 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod();
+
+        // If you later need cookies/auth from browser:
+        // policy.AllowCredentials();
     });
 });
 
@@ -140,11 +145,8 @@ builder.Services
             ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
 
-            // ✅ IMPORTANT: ensure roles + name resolve consistently
             RoleClaimType = ClaimTypes.Role,
             NameClaimType = ClaimTypes.Name,
-
-            // ✅ optional but recommended: avoid implicit 5-min clock skew
             ClockSkew = TimeSpan.Zero
         };
     });
@@ -159,19 +161,15 @@ builder.Services.AddSingleton<LiveSnapshotService>();
 // =========================================================
 // ✅ SIGNALS (STATIC) => GitHub RAW (NO local signals folder)
 // =========================================================
-
-// bind options from appsettings.json: Axion:Signals:GitHub
 builder.Services.Configure<GitHubSignalsOptions>(
     builder.Configuration.GetSection("Axion:Signals:GitHub"));
 
-// HttpClient for GitHub RAW downloads
 builder.Services.AddHttpClient("github-raw", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.UserAgent.ParseAdd("Axion/1.0");
 });
 
-// Signals source
 builder.Services.AddSingleton<ISignalsSource, GitHubSignalsSource>();
 
 // ---- STATIC readers (must use ISignalsSource) ----
@@ -179,16 +177,18 @@ builder.Services.AddSingleton<ArbitrageFilesService>();
 builder.Services.AddSingleton<OpenDoorFilesService>();
 builder.Services.AddSingleton<ChronoFilesService>();
 
-// ---- COMMON (signals join + eligibility + top + handlers + registry + signal service) ----
+// ---- COMMON ----
 builder.Services.AddSingleton<StrategyJoiner>();
 builder.Services.AddSingleton<EligibilityPolicy>();
-builder.Services.AddSingleton<TopModePolicy>(); // ✅ already used inside arbitrage handler
+builder.Services.AddSingleton<TopModePolicy>();
 
-// ✅ NEW: handler pattern (Arbitrage-only for now)
+// ✅ Handlers + registry + router
 builder.Services.AddSingleton<IStrategySignalsHandler, ArbitrageSignalsHandler>();
-builder.Services.AddSingleton<StrategyHandlerRegistry>();
+// (optional later)
+// builder.Services.AddSingleton<IStrategySignalsHandler, ChronoSignalsHandler>();
+// builder.Services.AddSingleton<IStrategySignalsHandler, OpenDoorSignalsHandler>();
 
-// Router service (now depends only on registry)
+builder.Services.AddSingleton<StrategyHandlerRegistry>();
 builder.Services.AddSingleton<StrategySignalService>();
 
 var app = builder.Build();
@@ -206,11 +206,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("dev");
-
 // app.UseHttpsRedirection(); // keep disabled for localhost over http
 
+// ✅ ORDER MATTERS:
 app.UseRouting();
+app.UseCors("dev");
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -222,13 +222,87 @@ if (Directory.Exists(wwwroot))
     app.UseStaticFiles();
 }
 
+/* =========================================================
+   ✅ LEGACY BRIDGE (NO redirect)
+   /api/arbitrage/**  -> /api/strategy/arbitrage/**
+   /api/chrono/**     -> /api/strategy/chrono/**
+   /api/opendoor/**   -> /api/strategy/opendoor/**
+   Keeps: method, query, headers, body, status-code, URL in browser
+   ========================================================= */
+app.Use(async (ctx, next) =>
+{
+    // Prevent double-rewrite if something re-enters pipeline
+    if (ctx.Items.ContainsKey("__legacy_bridge_done"))
+    {
+        await next();
+        return;
+    }
+
+    // Only legacy (do not touch already-new endpoints)
+    if (ctx.Request.Path.StartsWithSegments("/api/strategy"))
+    {
+        await next();
+        return;
+    }
+
+    static bool Match(HttpContext c, string legacyPrefix, out PathString remainder)
+        => c.Request.Path.StartsWithSegments(new PathString(legacyPrefix), out remainder);
+
+    if (Match(ctx, "/api/arbitrage", out var rem))
+    {
+        var old = ctx.Request.Path;
+        var oldBase = ctx.Request.PathBase;
+
+        ctx.Items["__legacy_bridge_done"] = true;
+        ctx.Request.PathBase = PathString.Empty;
+        ctx.Request.Path = new PathString("/api/strategy/arbitrage") + rem;
+
+        try { await next(); }
+        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
+
+        return;
+    }
+
+    if (Match(ctx, "/api/chrono", out rem))
+    {
+        var old = ctx.Request.Path;
+        var oldBase = ctx.Request.PathBase;
+
+        ctx.Items["__legacy_bridge_done"] = true;
+        ctx.Request.PathBase = PathString.Empty;
+        ctx.Request.Path = new PathString("/api/strategy/chrono") + rem;
+
+        try { await next(); }
+        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
+
+        return;
+    }
+
+    if (Match(ctx, "/api/opendoor", out rem))
+    {
+        var old = ctx.Request.Path;
+        var oldBase = ctx.Request.PathBase;
+
+        ctx.Items["__legacy_bridge_done"] = true;
+        ctx.Request.PathBase = PathString.Empty;
+        ctx.Request.Path = new PathString("/api/strategy/opendoor") + rem;
+
+        try { await next(); }
+        finally { ctx.Request.Path = old; ctx.Request.PathBase = oldBase; }
+
+        return;
+    }
+
+    await next();
+});
+
+// ✅ Controllers (must be AFTER bridge middleware)
 app.MapControllers();
 
 /* ===================== APP META (VERSION + HEALTH) ===================== */
 
 static string GetAppVersion()
 {
-    // Prefer informational version (supports tags/commits)
     var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
 
     var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
@@ -238,7 +312,6 @@ static string GetAppVersion()
     return asm.GetName().Version?.ToString() ?? "unknown";
 }
 
-// Version endpoint (Launcher can read this to display Version instead of "unknown")
 app.MapGet("/version", () =>
 {
     return Results.Ok(new
@@ -250,13 +323,10 @@ app.MapGet("/version", () =>
     });
 });
 
-// Health endpoint (Launcher should ping this; always returns 200 if app is alive)
 app.MapGet("/health", (IOptions<GitHubSignalsOptions> gh) =>
 {
     var o = gh.Value;
 
-    // We do not perform remote GitHub fetch here (keep it fast/robust).
-    // Just report whether token exists and what repo is configured.
     return Results.Ok(new
     {
         status = "ok",
@@ -323,11 +393,6 @@ app.MapGet("/__routes", (IEnumerable<EndpointDataSource> sources) =>
     return Results.Ok(routes);
 });
 
-/// <summary>
-/// Debug: open a signals file via ISignalsSource and return first line (or exception).
-/// Usage:
-///   /__sig?path=chrono/onefile.jsonl
-/// </summary>
 app.MapGet("/__sig", async (string path, ISignalsSource src, CancellationToken ct) =>
 {
     try
@@ -339,29 +404,14 @@ app.MapGet("/__sig", async (string path, ISignalsSource src, CancellationToken c
 
         var head = await sr.ReadLineAsync(ct);
 
-        return Results.Ok(new
-        {
-            ok = true,
-            path,
-            head
-        });
+        return Results.Ok(new { ok = true, path, head });
     }
     catch (Exception ex)
     {
-        return Results.Ok(new
-        {
-            ok = false,
-            path,
-            ex = ex.ToString()
-        });
+        return Results.Ok(new { ok = false, path, ex = ex.ToString() });
     }
 });
 
-/// <summary>
-/// Debug: read first N lines (bounded) from a signals file.
-/// Usage:
-///   /__sighead?path=chrono/onefile.jsonl&lines=3
-/// </summary>
 app.MapGet("/__sighead", async (string path, int lines, ISignalsSource src, CancellationToken ct) =>
 {
     lines = Math.Clamp(lines, 1, 20);
@@ -380,22 +430,11 @@ app.MapGet("/__sighead", async (string path, int lines, ISignalsSource src, Canc
             arr.Add(ln);
         }
 
-        return Results.Ok(new
-        {
-            ok = true,
-            path,
-            lines = arr.Count,
-            head = arr
-        });
+        return Results.Ok(new { ok = true, path, lines = arr.Count, head = arr });
     }
     catch (Exception ex)
     {
-        return Results.Ok(new
-        {
-            ok = false,
-            path,
-            ex = ex.ToString()
-        });
+        return Results.Ok(new { ok = false, path, ex = ex.ToString() });
     }
 });
 
