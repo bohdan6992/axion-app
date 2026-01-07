@@ -23,6 +23,9 @@ namespace Axion.Desktop
         private CancellationTokenSource? _updateCheckCts;
         private CancellationTokenSource? _refreshLoopCts;
 
+        // ✅ FIX: force local API port
+        private const int ApiPort = 5197;
+
         // GitHub repo for APP-A updates
         private const string AppOwner = "bohdan6992";
         private const string AppRepo = "axion-app";
@@ -32,7 +35,8 @@ namespace Axion.Desktop
         {
             InitializeComponent();
 
-            _api = new ApiProcessManager(port: 5127);
+            // ✅ FIX: always run API on http://localhost:5197
+            _api = new ApiProcessManager(port: ApiPort);
             _login = new LoginService(_api.BaseUrl);
 
             _appUpdater = new GitHubReleaseAppUpdater(
@@ -370,6 +374,7 @@ namespace Axion.Desktop
         {
             try
             {
+                // ✅ Swagger should be available at /swagger (now that API always runs on 5197)
                 var url = $"{_api.BaseUrl}/swagger";
                 AppendLog("Opening Swagger: " + url);
                 Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
