@@ -8,11 +8,10 @@ public sealed class ChronoSignalsHandler : IStrategySignalsHandler
 
     public Task<SignalsResponseDto> GetSignalsAsync(SignalsQueryDto q, CancellationToken ct)
     {
-        // Minimal valid response, so API doesn't 500 and UI can render "empty".
         var resp = new SignalsResponseDto
         {
             Strategy = Strategy,
-            GeneratedAt = DateTimeOffset.UtcNow,
+            GeneratedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), // ✅ long
             UniverseTickers = 0,
             ReturnedTickers = 0,
             Items = new List<SignalItemDto>()

@@ -11,7 +11,7 @@ public sealed class OpenDoorSignalsHandler : IStrategySignalsHandler
         var resp = new SignalsResponseDto
         {
             Strategy = Strategy,
-            GeneratedAt = DateTimeOffset.UtcNow,
+            GeneratedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), // ✅ long
             UniverseTickers = 0,
             ReturnedTickers = 0,
             Items = new List<SignalItemDto>()
