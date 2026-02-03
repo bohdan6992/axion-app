@@ -1,313 +1,293 @@
 using System;
-using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
-using System.Net.Sockets;
-using System.Text;
+using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Axion.Desktop.Services
+namespace Axion.Desktop.Services;
+
+/// <summary>
+/// APP-A (Releases) updater.
+/// - Downloads TradingBridgeApi publish zip from GitHub Releases (private repo supported via PAT)
+/// - Validates zip
+/// - Creates backup
+/// - Replaces C:\Axion\App atomically (best-effort)
+/// - Writes last updated release tag into Cache\app_version.json
+/// </summary>
+public sealed class GitHubReleaseAppUpdater
 {
-    public sealed class ApiProcessManager
+    public sealed record Result(bool Updated, string Tag);
+
+    private readonly string _owner;
+    private readonly string _repo;
+    private readonly string _assetName;
+    private readonly Func<InstallLayout, string?> _tokenProvider;
+
+    public GitHubReleaseAppUpdater(string owner, string repo, string assetName, Func<InstallLayout, string?> tokenProvider)
     {
-        private Process? _proc;
+        _owner = owner;
+        _repo = repo;
+        _assetName = assetName;
+        _tokenProvider = tokenProvider;
+    }
 
-        public bool IsRunning => _proc is { HasExited: false };
-        public int Port { get; }
-        public string BaseUrl => $"http://localhost:{Port}";
-        public string? LastHealthError { get; private set; }
+    public async Task<Result> UpdateApiAsync(InstallLayout install, IProgress<string>? progress, CancellationToken ct)
+    {
+        progress?.Report($"Repo: {_owner}/{_repo} (asset: {_assetName})");
 
-        // Where we log API process output (VERY useful)
-        public string StdOutLogPath { get; }
-        public string StdErrLogPath { get; }
+        var token = _tokenProvider(install);
+        if (string.IsNullOrWhiteSpace(token))
+            progress?.Report("Warning: no GitHub token found (private repo will fail). Add AXION_APP_GITHUB_TOKEN or Secrets\\app_github_pat.txt");
 
-        public ApiProcessManager(int port = 5197)
+        // 1) Get latest release
+        var latest = await GetLatestReleaseAsync(token, ct);
+        var tag = latest.TagName ?? "unknown";
+        progress?.Report($"Latest release: {tag}");
+
+        // 2) Check if already at this tag
+        var currentTag = TryReadInstalledTag(install);
+        if (!string.IsNullOrWhiteSpace(currentTag) && string.Equals(currentTag, tag, StringComparison.OrdinalIgnoreCase))
         {
-            Port = port;
-
-            // Prefer Axion cache dir if available, else fallback to C:\Axion\Cache
-            var cacheDir =
-                TryGetAxionCacheDir() ??
-                @"C:\Axion\Cache";
-
-            Directory.CreateDirectory(cacheDir);
-            StdOutLogPath = Path.Combine(cacheDir, "api_stdout.log");
-            StdErrLogPath = Path.Combine(cacheDir, "api_stderr.log");
+            progress?.Report("Already up-to-date.");
+            return new Result(false, tag);
         }
 
-        public void Start()
-        {
-            if (IsRunning) return;
+        // 3) Find asset
+        var asset = latest.Assets?.FirstOrDefault(a => string.Equals(a.Name, _assetName, StringComparison.OrdinalIgnoreCase));
+        if (asset is null)
+            throw new InvalidOperationException($"Release {tag} has no asset named '{_assetName}'.");
 
-            // If port is already open, don't spawn duplicates (launcher might be racing)
-            if (IsPortOpen("127.0.0.1", Port, TimeSpan.FromMilliseconds(250)))
+        if (string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
+            throw new InvalidOperationException($"Asset '{_assetName}' has no browser_download_url (GitHub API parse failed).");
+
+        // 4) Download to Cache
+        Directory.CreateDirectory(install.CacheDir);
+        var zipPath = Path.Combine(install.CacheDir, $"{_assetName.Replace('.', '_')}_{tag}.zip");
+        progress?.Report("Downloading release asset...");
+        await DownloadAsync(asset.BrowserDownloadUrl!, zipPath, token, progress, ct);
+
+        // 5) Validate zip
+        progress?.Report("Validating zip...");
+        ValidateZip(zipPath);
+
+        // 6) Extract to staging
+        var stagingDir = Path.Combine(install.CacheDir, "new_app");
+        if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
+        Directory.CreateDirectory(stagingDir);
+        progress?.Report("Extracting...");
+        ZipFile.ExtractToDirectory(zipPath, stagingDir);
+
+        // Some zips contain a single root folder. If so, step into it.
+        stagingDir = NormalizeExtractRoot(stagingDir);
+
+        // 7) Backup current app dir
+        var backupTag = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+        var backupDir = Path.Combine(install.BackupDir, $"App_{backupTag}");
+        Directory.CreateDirectory(install.BackupDir);
+
+        if (Directory.Exists(install.AppDir) && Directory.EnumerateFileSystemEntries(install.AppDir).Any())
+        {
+            progress?.Report("Creating backup...");
+            CopyDirectory(install.AppDir, backupDir);
+            WriteLastBackupPointer(install, backupDir);
+        }
+
+        // 8) Replace app dir atomically (best-effort on Windows)
+        progress?.Report("Replacing C:\\Axion\\App...");
+        ReplaceDirectory(install.AppDir, stagingDir);
+
+        // 9) Record installed version
+        WriteInstalledTag(install, tag);
+        progress?.Report("Done.");
+
+        return new Result(true, tag);
+    }
+
+    public static void TryRollbackLastBackup(InstallLayout install, IProgress<string>? progress)
+    {
+        try
+        {
+            var p = Path.Combine(install.CacheDir, "last_backup.txt");
+            if (!File.Exists(p))
             {
-                LastHealthError = null;
+                progress?.Report("No backup pointer found.");
                 return;
             }
 
-            var apiDir = ResolveApiDir();
-            var apiExe = Path.Combine(apiDir, "TradingBridgeApi.exe");
-            var apiDll = Path.Combine(apiDir, "TradingBridgeApi.dll");
-
-            if (!File.Exists(apiExe) && !File.Exists(apiDll))
-                throw new FileNotFoundException(
-                    $"TradingBridgeApi not found. Looked in: {apiDir}",
-                    File.Exists(apiExe) ? apiExe : apiDll);
-
-            // Clear old logs on each start (optional, but makes it readable)
-            TryWriteText(StdOutLogPath, $"[{DateTime.Now:O}] === START ===\n");
-            TryWriteText(StdErrLogPath, $"[{DateTime.Now:O}] === START ===\n");
-
-            var psi = new ProcessStartInfo
+            var backupDir = File.ReadAllText(p).Trim();
+            if (string.IsNullOrWhiteSpace(backupDir) || !Directory.Exists(backupDir))
             {
-                FileName = File.Exists(apiExe) ? apiExe : "dotnet",
-                WorkingDirectory = apiDir,
-
-                UseShellExecute = false,
-                CreateNoWindow = true,
-
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-
-            if (!File.Exists(apiExe))
-            {
-                // framework-dependent publish
-                psi.ArgumentList.Add(apiDll);
+                progress?.Report("Backup folder missing.");
+                return;
             }
 
-            // Bind to the same BaseUrl we will call
-            psi.Environment["ASPNETCORE_URLS"] = BaseUrl;
-
-            // IMPORTANT: don't force Development if you're shipping Production builds;
-            // but leaving it is fine if you want Swagger/etc. Just keep consistent.
-            psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
-
-            // Signals repo token is provided via env
-            var signalsToken = Secrets.TryReadGitHubTokenForSignalsRepo(App.Install);
-            if (!string.IsNullOrWhiteSpace(signalsToken))
-                psi.Environment["Axion__Signals__GitHub__Token"] = signalsToken;
-
-            _proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-
-            _proc.OutputDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrEmpty(e.Data))
-                    TryAppendLine(StdOutLogPath, e.Data);
-            };
-
-            _proc.ErrorDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrEmpty(e.Data))
-                    TryAppendLine(StdErrLogPath, e.Data);
-            };
-
-            if (!_proc.Start())
-                throw new InvalidOperationException("Failed to start TradingBridgeApi process.");
-
-            _proc.BeginOutputReadLine();
-            _proc.BeginErrorReadLine();
-
-            LastHealthError = null;
+            progress?.Report("Rolling back app folder...");
+            ReplaceDirectory(install.AppDir, backupDir);
+            progress?.Report("Rollback completed.");
         }
-
-        public void Stop()
+        catch (Exception ex)
         {
-            if (!IsRunning) return;
-
-            try
-            {
-                // API is console app => CloseMainWindow often does nothing
-                // Kill is the reliable way
-                _proc!.Kill(entireProcessTree: true);
-                _proc.WaitForExit(1500);
-            }
-            catch
-            {
-                try { _proc?.Kill(entireProcessTree: true); } catch { }
-            }
-            finally
-            {
-                _proc?.Dispose();
-                _proc = null;
-            }
+            progress?.Report("Rollback error: " + ex.Message);
         }
+    }
 
-        /// <summary>
-        /// Wait until API responds 200 OK on /health.
-        /// Also detects "process died immediately" and returns a meaningful error.
-        /// </summary>
-        public async Task<bool> WaitUntilHealthyAsync(TimeSpan timeout, CancellationToken ct)
+    private async Task<ReleaseDto> GetLatestReleaseAsync(string? token, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("AxionLauncher/1.0");
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+
+        // GitHub accepts either "token" or "Bearer" for PAT; keep Bearer since you used it.
+        if (!string.IsNullOrWhiteSpace(token))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+
+        var url = $"https://api.github.com/repos/{_owner}/{_repo}/releases/latest";
+        using var resp = await http.GetAsync(url, ct);
+        var txt = await resp.Content.ReadAsStringAsync(ct);
+
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"GitHub API error: {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {txt}");
+
+        return JsonSerializer.Deserialize<ReleaseDto>(txt, new JsonSerializerOptions
         {
-            var stopAt = DateTime.UtcNow + timeout;
+            PropertyNameCaseInsensitive = true
+        }) ?? throw new InvalidOperationException("Failed to parse GitHub release json.");
+    }
 
-            // Per-request timeout; overall timeout is the loop.
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    private static async Task DownloadAsync(string url, string dest, string? token, IProgress<string>? progress, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("AxionLauncher/1.0");
 
-            while (DateTime.UtcNow < stopAt)
-            {
-                ct.ThrowIfCancellationRequested();
+        if (!string.IsNullOrWhiteSpace(token))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
 
-                // If we started a process and it already exited — this is NOT "slow start"
-                if (_proc is not null && _proc.HasExited)
-                {
-                    var tail = SafeTail(StdErrLogPath, 40);
-                    LastHealthError =
-                        $"API process exited (code={_proc.ExitCode}). " +
-                        $"See stderr log: {StdErrLogPath}\n" +
-                        (string.IsNullOrWhiteSpace(tail) ? "" : $"--- stderr tail ---\n{tail}");
-                    return false;
-                }
+        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Asset download failed: {(int)resp.StatusCode} {resp.ReasonPhrase}");
 
-                try
-                {
-                    var resp = await http.GetAsync($"{BaseUrl}/health", ct);
-                    if (resp.IsSuccessStatusCode)
-                    {
-                        LastHealthError = null;
-                        return true;
-                    }
+        await using var fs = File.Create(dest);
+        await resp.Content.CopyToAsync(fs, ct);
+        progress?.Report($"Downloaded to {dest}");
+    }
 
-                    LastHealthError = $"GET /health -> {(int)resp.StatusCode} {resp.ReasonPhrase}";
-                }
-                catch (Exception ex)
-                {
-                    LastHealthError = ex.Message;
-                }
+    private static void ValidateZip(string zipPath)
+    {
+        using var zip = ZipFile.OpenRead(zipPath);
 
-                await Task.Delay(250, ct);
-            }
+        var hasExe = zip.Entries.Any(e => e.FullName.EndsWith("TradingBridgeApi.exe", StringComparison.OrdinalIgnoreCase));
+        var hasDll = zip.Entries.Any(e => e.FullName.EndsWith("TradingBridgeApi.dll", StringComparison.OrdinalIgnoreCase));
 
-            // Final diagnostic if port never opened
-            if (!IsPortOpen("127.0.0.1", Port, TimeSpan.FromMilliseconds(200)))
-            {
-                LastHealthError =
-                    $"Port {Port} is not listening. " +
-                    $"If API was started, check logs:\nstdout: {StdOutLogPath}\nstderr: {StdErrLogPath}";
-            }
+        if (!hasExe && !hasDll)
+            throw new InvalidOperationException("Zip does not contain TradingBridgeApi.exe nor TradingBridgeApi.dll");
+    }
 
-            return false;
-        }
+    private static string NormalizeExtractRoot(string extractedRoot)
+    {
+        // If extractedRoot contains exactly one directory and no files, step into it.
+        var dirs = Directory.GetDirectories(extractedRoot);
+        var files = Directory.GetFiles(extractedRoot);
+        if (files.Length == 0 && dirs.Length == 1)
+            return dirs[0];
+        return extractedRoot;
+    }
 
-        public async Task<string?> TryGetVersionAsync(CancellationToken ct)
+    private static void ReplaceDirectory(string targetDir, string sourceDir)
+    {
+        // Best-effort atomic-ish replace:
+        //  - move current to *_old
+        //  - move new into place
+        //  - delete old
+        var parent = Directory.GetParent(targetDir)?.FullName ?? throw new InvalidOperationException("Target dir has no parent");
+        Directory.CreateDirectory(parent);
+
+        var oldDir = targetDir + "_old";
+        if (Directory.Exists(oldDir)) Directory.Delete(oldDir, true);
+
+        if (Directory.Exists(targetDir))
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-
-            try
-            {
-                var resp = await http.GetAsync($"{BaseUrl}/version", ct);
-                if (!resp.IsSuccessStatusCode) return null;
-
-                var json = await resp.Content.ReadAsStringAsync(ct);
-
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String)
-                    return v.GetString();
-
-                return null;
-            }
-            catch
-            {
-                return null;
-            }
+            Directory.Move(targetDir, oldDir);
         }
 
-        // -------------------- helpers --------------------
+        Directory.Move(sourceDir, targetDir);
 
-        private static string? TryGetAxionCacheDir()
+        if (Directory.Exists(oldDir))
         {
-            try
-            {
-                // if your InstallLayout exposes CacheDir, use it
-                return App.Install?.CacheDir;
-            }
-            catch { return null; }
+            try { Directory.Delete(oldDir, true); } catch { /* ignore */ }
         }
+    }
 
-        private static bool IsPortOpen(string host, int port, TimeSpan timeout)
+    private static void CopyDirectory(string srcDir, string dstDir)
+    {
+        Directory.CreateDirectory(dstDir);
+
+        foreach (var dir in Directory.GetDirectories(srcDir, "*", SearchOption.AllDirectories))
         {
-            try
-            {
-                using var cts = new CancellationTokenSource(timeout);
-                using var client = new TcpClient();
-                var t = client.ConnectAsync(host, port, cts.Token);
-                t.GetAwaiter().GetResult();
-                return client.Connected;
-            }
-            catch
-            {
-                return false;
-            }
+            var rel = Path.GetRelativePath(srcDir, dir);
+            Directory.CreateDirectory(Path.Combine(dstDir, rel));
         }
 
-        private static void TryWriteText(string path, string text)
+        foreach (var file in Directory.GetFiles(srcDir, "*", SearchOption.AllDirectories))
         {
-            try { File.WriteAllText(path, text); } catch { }
+            var rel = Path.GetRelativePath(srcDir, file);
+            var dest = Path.Combine(dstDir, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.Copy(file, dest, true);
         }
+    }
 
-        private static void TryAppendLine(string path, string line)
+    private static void WriteInstalledTag(InstallLayout install, string tag)
+    {
+        Directory.CreateDirectory(install.CacheDir);
+        var p = Path.Combine(install.CacheDir, "app_version.json");
+        File.WriteAllText(p, JsonSerializer.Serialize(
+            new { tag, updatedUtc = DateTime.UtcNow.ToString("O") },
+            new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string? TryReadInstalledTag(InstallLayout install)
+    {
+        try
         {
-            try { File.AppendAllText(path, line + Environment.NewLine); } catch { }
+            var p = Path.Combine(install.CacheDir, "app_version.json");
+            if (!File.Exists(p)) return null;
+            var doc = JsonDocument.Parse(File.ReadAllText(p));
+            return doc.RootElement.TryGetProperty("tag", out var t) ? t.GetString() : null;
         }
-
-        private static string SafeTail(string path, int maxLines)
+        catch
         {
-            try
-            {
-                if (!File.Exists(path)) return "";
-                var lines = File.ReadLines(path).Reverse().Take(maxLines).Reverse();
-                return string.Join(Environment.NewLine, lines);
-            }
-            catch
-            {
-                return "";
-            }
+            return null;
         }
+    }
 
-        private static string ResolveApiDir()
-        {
-            // 1) Canon: C:\Axion\App
-            var p1 = @"C:\Axion\App";
-            if (LooksLikeApiDir(p1)) return p1;
+    private static void WriteLastBackupPointer(InstallLayout install, string backupDir)
+    {
+        Directory.CreateDirectory(install.CacheDir);
+        File.WriteAllText(Path.Combine(install.CacheDir, "last_backup.txt"), backupDir);
+    }
 
-            // 2) If launcher has a root folder concept, try root\App
-            try
-            {
-                var root = App.Install?.RootDir; // if exists in your InstallLayout
-                if (!string.IsNullOrWhiteSpace(root))
-                {
-                    var p2 = Path.Combine(root, "App");
-                    if (LooksLikeApiDir(p2)) return p2;
-                }
-            }
-            catch { /* ignore */ }
+    // DTOs (minimal) — IMPORTANT: map snake_case JSON properties
+    private sealed class ReleaseDto
+    {
+        [JsonPropertyName("tag_name")]
+        public string? TagName { get; set; }
 
-            // 3) Fallback: old behavior (whatever AppDir was)
-            var appDir = App.Install.AppDir;
-            if (LooksLikeApiDir(appDir)) return appDir;
+        [JsonPropertyName("assets")]
+        public AssetDto[]? Assets { get; set; }
+    }
 
-            // 4) Last resort: return canonical even if missing (so error message is clear)
-            return p1;
-        }
+    private sealed class AssetDto
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
 
-        private static bool LooksLikeApiDir(string dir)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return false;
-                return File.Exists(Path.Combine(dir, "TradingBridgeApi.exe")) ||
-                       File.Exists(Path.Combine(dir, "TradingBridgeApi.dll"));
-            }
-            catch
-            {
-                return false;
-            }
-        }
+        [JsonPropertyName("browser_download_url")]
+        public string? BrowserDownloadUrl { get; set; }
     }
 }
