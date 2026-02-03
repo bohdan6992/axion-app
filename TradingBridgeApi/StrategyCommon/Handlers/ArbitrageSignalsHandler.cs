@@ -323,6 +323,8 @@ public sealed class ArbitrageSignalsHandler : IStrategySignalsHandler
             Console.WriteLine($"[ARB] after mode=top policy => {eligibleItems.Count}");
         }
 
+        // paper hook removed — paper/research is tape-first now (see Services/Tape + Services/Research).
+
         // ----------------------------
         // 7) paging
         // ----------------------------

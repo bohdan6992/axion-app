@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.22" />
+    <PackageReference Include="Parquet.Net" Version="5.4.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="Microsoft.Windows.Compatibility" Version="10.0.0" />
 
@@ -31,6 +32,15 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+
+    <!-- ========================= -->
+    <!-- TAPE-FIRST: Parquet + compression -->
+    <!-- ========================= -->
+
+    <!-- Snappy compression providers:
+         - Snappy.NET: existing
+         - K4os.Compression.Snappy: robust provider fallback (helps avoid runtime snappy issues on clean machines/CI)
+    -->
   </ItemGroup>
 
   <!-- Optional TRAP reference: only if enabled AND DLL exists -->
@@ -42,10 +52,8 @@
   </ItemGroup>
 
   <!-- If TRAP is enabled but DLL missing, print a warning (do not fail build) -->
-  <Target Name="WarnIfTrapMissing"
-          BeforeTargets="BeforeBuild"
-          Condition="'$(UseTRAP)'=='true' AND !Exists('$(TRAP_DllPath)')">
-    <Warning Text="TradingAppAPI.dll not found at '$(TRAP_DllPath)'. Building WITHOUT TRAP. To disable this warning: dotnet build -p:UseTRAP=false" />
+  <Target Name="WarnIfTrapMissing" BeforeTargets="BeforeBuild" Condition="'$(UseTRAP)'=='true' AND !Exists('$(TRAP_DllPath)')">
+    <Warning Text="TradingAppAPI.dll not found at '$(TRAP_DllPath)'. Building WITHOUT TRAP. (Disable warning: dotnet build -p:UseTRAP=false)" />
   </Target>
 
   <ItemGroup>

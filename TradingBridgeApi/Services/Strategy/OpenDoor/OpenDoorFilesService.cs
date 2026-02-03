@@ -34,6 +34,10 @@ public sealed class OpenDoorFilesService
 
     private const string ManifestRel = "_meta/manifest.json";
 
+    // NEW: repo has no manifest; strategy folders are direct
+    private const bool UseManifest = false;
+
+
     // manifest-derived
     private string _strategyDir = FallbackStrategyDir; // from manifest strategies[code].dir
     private DateTime? _manifestUpdatedAtUtc = null;     // from manifest.updatedAtUtc (single timestamp)
@@ -208,6 +212,18 @@ public sealed class OpenDoorFilesService
         if (_manifestLoadedAtUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestLoadedAtUtc) < RefreshTtl)
             return;
 
+        // NEW: No manifest in the new repo layout.
+        // Keep all manifest logic below intact, but bypass it by default.
+        if (!UseManifest)
+        {
+            _strategyDir = string.IsNullOrWhiteSpace(FallbackStrategyDir) ? StrategyCode : FallbackStrategyDir;
+            _manifestUpdatedAtUtc = null;
+            _manifestFileTimes = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            _manifestLoadedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        // ===== old manifest logic (kept) =====
         var fileTimes = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         var dir = FallbackStrategyDir;
         DateTime? updatedAt = null;
@@ -222,7 +238,7 @@ public sealed class OpenDoorFilesService
             // {
             //   "updatedAtUtc": "2026-01-02T13:30:00Z",
             //   "strategies": {
-            //      "opendoor": { "dir":"opendoor", "files":["summary.csv","onefile.jsonl","best_params.jsonl"] }
+            //      "chrono": { "dir":"chrono", "files":["summary.csv","onefile.jsonl","best_params.jsonl"] }
             //   }
             // }
             if (root.ValueKind == JsonValueKind.Object)
@@ -264,8 +280,8 @@ public sealed class OpenDoorFilesService
 
             // === Backward-compatible formats (OLDER) ===
             // 1) { "files": [ { "path": "...", "updatedAtUtc": "..." }, ... ] }
-            // 2) { "files": { "opendoor/onefile.jsonl": "2026-01-01T..." , ... } }
-            // 3) { "opendoor/onefile.jsonl": { "updatedAtUtc": "..." } , ... }
+            // 2) { "files": { "chrono/onefile.jsonl": "2026-01-01T..." , ... } }
+            // 3) { "chrono/onefile.jsonl": { "updatedAtUtc": "..." } , ... }
             if (fileTimes.Count == 0 && root.ValueKind == JsonValueKind.Object && root.TryGetProperty("files", out var filesEl))
             {
                 if (filesEl.ValueKind == JsonValueKind.Array)
@@ -327,6 +343,7 @@ public sealed class OpenDoorFilesService
         _manifestFileTimes = fileTimes;
         _manifestLoadedAtUtc = DateTime.UtcNow;
     }
+
 
     private static bool TryReadUpdatedAt(JsonElement obj, out DateTime whenUtc)
     {

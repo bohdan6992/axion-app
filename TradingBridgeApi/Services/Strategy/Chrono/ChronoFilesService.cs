@@ -34,6 +34,10 @@ public sealed class ChronoFilesService
 
     private const string ManifestRel = "_meta/manifest.json";
 
+    // NEW: repo has no manifest; strategy folders are direct
+    private const bool UseManifest = false;
+
+
     // manifest-derived
     private string _strategyDir = FallbackStrategyDir; // from manifest strategies[code].dir
     private DateTime? _manifestUpdatedAtUtc = null;     // from manifest.updatedAtUtc (single timestamp)
@@ -208,6 +212,18 @@ public sealed class ChronoFilesService
         if (_manifestLoadedAtUtc != DateTime.MinValue && (DateTime.UtcNow - _manifestLoadedAtUtc) < RefreshTtl)
             return;
 
+        // NEW: No manifest in the new repo layout.
+        // Keep all manifest logic below intact, but bypass it by default.
+        if (!UseManifest)
+        {
+            _strategyDir = string.IsNullOrWhiteSpace(FallbackStrategyDir) ? StrategyCode : FallbackStrategyDir;
+            _manifestUpdatedAtUtc = null;
+            _manifestFileTimes = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            _manifestLoadedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        // ===== old manifest logic (kept) =====
         var fileTimes = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         var dir = FallbackStrategyDir;
         DateTime? updatedAt = null;
@@ -327,6 +343,7 @@ public sealed class ChronoFilesService
         _manifestFileTimes = fileTimes;
         _manifestLoadedAtUtc = DateTime.UtcNow;
     }
+
 
     private static bool TryReadUpdatedAt(JsonElement obj, out DateTime whenUtc)
     {

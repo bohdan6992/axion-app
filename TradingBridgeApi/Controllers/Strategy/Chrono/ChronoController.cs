@@ -28,6 +28,9 @@ public sealed class ChronoController : ControllerBase
         var (ok, err, errType, payload) = await _files.GetSummaryAsync(ct);
         if (!ok) return BadRequest(new { ok, error = err, errorType = errType });
 
+        if (payload is null)
+            return NotFound(new { ok = false, error = "Summary payload is null", errorType = "NULL_PAYLOAD" });
+
         var (updatedAt, csv) = SummaryPayloadExtractor.Extract(payload);
         var (header, items) = CsvMini.Parse(csv, q);
 

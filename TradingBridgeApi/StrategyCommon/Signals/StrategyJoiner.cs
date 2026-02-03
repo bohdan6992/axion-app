@@ -169,7 +169,7 @@ public sealed class StrategyJoiner
             // print: abs(zap*sigma) >= best.PrintMedianPos/Neg (fallback 0.1)
             // ----------------------------
             {
-                const decimal MIN_SIGMA_ABS_OTHER = 0.1m;
+                const decimal MIN_SIGMA_ABS_OTHER = 0.05m;
                 const decimal FALLBACK_PRINT_POS = 0.1m;
                 const decimal FALLBACK_PRINT_NEG = 0.1m;
 

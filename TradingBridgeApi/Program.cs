@@ -15,6 +15,14 @@ using Microsoft.IdentityModel.Tokens;
 using TradingBridgeApi;
 using TradingBridgeApi.Auth;
 using TradingBridgeApi.Services.Live;
+
+// ✅ TAPE-FIRST (new)
+using TradingBridgeApi.Services.Tape;
+using TradingBridgeApi.Services.Research;
+
+// ✅ TAPE arbitrage (episodes)
+using TradingBridgeApi.Services.Tape.Strategies.Arbitrage;
+
 using TradingBridgeApi.Services.Strategy.Arbitrage;
 using TradingBridgeApi.Services.Strategy.Chrono;
 using TradingBridgeApi.Services.Strategy.OpenDoor;
@@ -26,6 +34,12 @@ using TradingBridgeApi.StrategyCommon.Handlers;
 
 // ✅ GitHub signals source
 using TradingBridgeApi.Signals;
+
+// ✅ Sifter options + services
+using TradingBridgeApi.Options;
+using TradingBridgeApi.Services.Sifter;
+using TradingBridgeApi.Services.Tickerdays;
+
 
 // ---- Axion paths bootstrap (AppData root only; signals are from GitHub now) ----
 AxionPaths.InitFromEnvOrDefaults();
@@ -58,10 +72,9 @@ builder.Services.AddCors(options =>
     {
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
-              .AllowAnyMethod();
-
-        // If you later need cookies/auth from browser:
-        // policy.AllowCredentials();
+              .AllowAnyMethod()
+              .AllowCredentials() // ✅ important for SSE/cookies scenarios (safe even if unused)
+              .WithExposedHeaders("Content-Type"); // ✅ helpful for SSE/debug
     });
 });
 
@@ -118,6 +131,8 @@ builder.Services.ConfigureApplicationCookie(options =>
 builder.Services.AddSingleton<AllowlistService>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddHostedService<BootstrapAdminHostedService>();
+builder.Services.AddHostedService<IdentityDbInitHostedService>();
+
 
 var jwtKey = builder.Configuration["Auth:Jwt:Key"] ?? "CHANGE_ME__use_long_random_secret_in_prod";
 var jwtIssuer = builder.Configuration["Auth:Jwt:Issuer"] ?? "AxionLocal";
@@ -173,7 +188,7 @@ builder.Services.AddHttpClient("github-raw", client =>
 builder.Services.AddSingleton<ISignalsSource, GitHubSignalsSource>();
 
 // ---- STATIC readers (must use ISignalsSource) ----
-builder.Services.AddSingleton<ArbitrageFilesService>();
+builder.Services.AddSingleton<IArbitrageFilesService, ArbitrageFilesService>();
 builder.Services.AddSingleton<OpenDoorFilesService>();
 builder.Services.AddSingleton<ChronoFilesService>();
 
@@ -182,26 +197,67 @@ builder.Services.AddSingleton<StrategyJoiner>();
 builder.Services.AddSingleton<EligibilityPolicy>();
 builder.Services.AddSingleton<TopModePolicy>();
 
-// ✅ Handlers + registry + router
+// =========================================================
+// ✅ TAPE-FIRST (FULL under terminal filters)
+// =========================================================
+// Intraday tape writer (runs each minute) + query services + retention
+builder.Services.AddSingleton<TapeFilePaths>();
+builder.Services.AddSingleton<ITapeWriter, TapeWriter>();
+builder.Services.AddSingleton<TapeQueryService>();
+builder.Services.AddSingleton<TapeRetentionService>();
+builder.Services.AddHostedService<TapeWriterHostedService>();
+
+// ✅ Tape-based arbitrage episodes (Active/Closed store)
+builder.Services.AddSingleton<TapeArbitrageStore>();
+builder.Services.AddSingleton<TapeArbitrageEngine>();
+builder.Services.AddHostedService<TapeArbitrageHostedService>();
+
+// Research/Paper over tape
+builder.Services.AddSingleton<ArbitragePnlService>();
+
+// =========================================================
+// ✅ SIFTER (own folder, NOT inside minute tape)
+// =========================================================
+builder.Services.Configure<SifterOptions>(
+    builder.Configuration.GetSection("Sifter"));
+
+builder.Services.AddSingleton<SifterDayOsbStore>();
+builder.Services.AddSingleton<SifterDaysService>();
+builder.Services.AddSingleton<SifterWindowService>();
+builder.Services.AddSingleton<SifterOsbIngestService>();
+
+
+// =========================================================
+// ✅ TICKERDAYS (job-based report: create → status → result)
+// =========================================================
+builder.Services.Configure<TickerdaysOptions>(
+    builder.Configuration.GetSection("Tickerdays"));
+
+builder.Services.AddSingleton<TickerdaysJobStore>();
+builder.Services.AddSingleton<TickerdaysReportBuilder>();
+
+
+
+// ✅ Handlers + registry + router (LIVE signals still work)
 builder.Services.AddSingleton<IStrategySignalsHandler, ArbitrageSignalsHandler>();
 
 // ✅ IMPORTANT: to avoid "unknown strategy" for /api/chrono/* and /api/opendoor/* signals,
 // you must register handlers for them too (can be stubs for now).
-// If these classes don't exist yet, create stubs or comment these out temporarily.
 builder.Services.AddSingleton<IStrategySignalsHandler, ChronoSignalsHandler>();
 builder.Services.AddSingleton<IStrategySignalsHandler, OpenDoorSignalsHandler>();
 
 builder.Services.AddSingleton<StrategyHandlerRegistry>();
 builder.Services.AddSingleton<StrategySignalService>();
 
+var urlsFromEnv = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+if (!string.IsNullOrWhiteSpace(urlsFromEnv))
+{
+    builder.WebHost.UseUrls(urlsFromEnv);
+}
+
+
 var app = builder.Build();
 
-// Ensure Identity DB exists (no migrations required)
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AxionIdentityDbContext>();
-    db.Database.EnsureCreated();
-}
 
 if (app.Environment.IsDevelopment())
 {

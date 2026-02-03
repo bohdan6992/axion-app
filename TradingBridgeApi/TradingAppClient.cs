@@ -31,6 +31,10 @@ public class TradingAppClient
         "BidLstClsΔ%", "AskLstClsΔ%", "Bid", "Ask", "Exchange"
     };
 
+    // ✅ Tape writer / full terminal snapshots: батчинг, щоб не валити DLL гігантськими масивами.
+    // Підібрано консервативно: 800 тикерів × ~50-70 полів => нормальний компроміс.
+    public const int DefaultBatchSize = 800;
+
     public TradingAppClient()
     {
         _client = new DataClient();
@@ -167,9 +171,6 @@ public class TradingAppClient
         if (!s.Any(char.IsDigit)) return false;
 
         // Якщо є букви (крім K/M/B на кінці) — швидше за все текст
-        // (Exchange типу "NSDQ" -> цифр нема, вже відфільтровано)
-        // Company може містити цифри (наприклад "3M") — тоді краще не примушувати в число
-        // Тому: дозволяємо тільки K/M/B як суфікс, інакше якщо багато букв — вважаємо текстом.
         var letters = s.Count(char.IsLetter);
         if (letters == 0) return true;
 
@@ -251,6 +252,30 @@ public class TradingAppClient
         return result;
     }
 
+    /// <summary>
+    /// Sync batched quotes: merges batches into one dictionary.
+    /// This is safer for huge universes (e.g., 4k tickers).
+    /// </summary>
+    public Dictionary<string, Dictionary<string, object?>> GetQuotesBatched(
+        string[] tickers,
+        string[] fields,
+        int batchSize)
+    {
+        if (batchSize <= 0)
+            return GetQuotes(tickers, fields);
+
+        var result = new Dictionary<string, Dictionary<string, object?>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var batch in Batch(tickers, batchSize))
+        {
+            var part = GetQuotes(batch, fields);
+            foreach (var kv in part)
+                result[kv.Key] = kv.Value;
+        }
+
+        return result;
+    }
+
     public Task<Dictionary<string, Dictionary<string, object?>>> GetQuotesAsync(
         string[] tickers,
         CancellationToken ct = default)
@@ -258,21 +283,48 @@ public class TradingAppClient
         return GetQuotesAsync(tickers, DefaultFields, ct);
     }
 
+    public Task<Dictionary<string, Dictionary<string, object?>>> GetQuotesAsync(
+        string[] tickers,
+        string[] fields,
+        CancellationToken ct = default)
+    {
+        // keep old behavior
+        return GetQuotesAsync(tickers, fields, batchSize: 0, ct: ct);
+    }
+
+    /// <summary>
+    /// Async quotes with optional batching (recommended for tape writer).
+    /// batchSize:
+    /// - 0 or less => single call (old behavior)
+    /// - >0        => split tickers into batches and merge results
+    /// </summary>
     public async Task<Dictionary<string, Dictionary<string, object?>>> GetQuotesAsync(
         string[] tickers,
         string[] fields,
+        int batchSize,
         CancellationToken ct = default)
     {
         // ✅ ВАЖЛИВО: без Task.Run (не плодимо конкурентні виконання)
         await _dllGate.WaitAsync(ct);
         try
         {
-            return GetQuotes(tickers, fields);
+            return GetQuotesBatched(tickers, fields, batchSize);
         }
         finally
         {
             _dllGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Convenience: batched quotes with default batch size.
+    /// </summary>
+    public Task<Dictionary<string, Dictionary<string, object?>>> GetQuotesBatchedAsync(
+        string[] tickers,
+        string[] fields,
+        CancellationToken ct = default)
+    {
+        return GetQuotesAsync(tickers, fields, DefaultBatchSize, ct);
     }
 
     public async Task<object> RunStressTestAsync(
@@ -315,5 +367,22 @@ public class TradingAppClient
             avgMs = totalSw.Elapsed.TotalMilliseconds / rounds,
             roundsStats
         };
+    }
+
+    private static IEnumerable<string[]> Batch(string[] items, int batchSize)
+    {
+        if (batchSize <= 0)
+        {
+            yield return items;
+            yield break;
+        }
+
+        for (int i = 0; i < items.Length; i += batchSize)
+        {
+            var n = Math.Min(batchSize, items.Length - i);
+            var arr = new string[n];
+            Array.Copy(items, i, arr, 0, n);
+            yield return arr;
+        }
     }
 }
