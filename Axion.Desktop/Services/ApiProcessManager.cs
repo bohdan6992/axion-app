@@ -97,7 +97,7 @@ namespace Axion.Desktop.Services
         public async Task<bool> WaitUntilHealthyAsync(TimeSpan timeout, CancellationToken ct)
         {
             var stopAt = DateTime.UtcNow + timeout;
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
             while (DateTime.UtcNow < stopAt)
             {
@@ -131,7 +131,7 @@ namespace Axion.Desktop.Services
         /// </summary>
         public async Task<string?> TryGetVersionAsync(CancellationToken ct)
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
             try
             {
