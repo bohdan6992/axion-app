@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -14,9 +14,8 @@ namespace Axion.Desktop.Services
     public sealed class ApiProcessManager
     {
         private Process? _proc;
-        private bool _attachedToExisting; // if we detected an already-running API and didn't spawn it
 
-        public bool IsRunning => _proc is { HasExited: false } || _attachedToExisting;
+        public bool IsRunning => _proc is { HasExited: false };
         public int Port { get; }
         public string BaseUrl => $"http://localhost:{Port}";
         public string? LastHealthError { get; private set; }
@@ -29,39 +28,39 @@ namespace Axion.Desktop.Services
         {
             Port = port;
 
-            var cacheDir = TryGetAxionCacheDir() ?? @"C:\Axion\Cache";
-            Directory.CreateDirectory(cacheDir);
+            // Prefer Axion cache dir if available, else fallback to C:\Axion\Cache
+            var cacheDir =
+                TryGetAxionCacheDir() ??
+                @"C:\Axion\Cache";
 
+            Directory.CreateDirectory(cacheDir);
             StdOutLogPath = Path.Combine(cacheDir, "api_stdout.log");
             StdErrLogPath = Path.Combine(cacheDir, "api_stderr.log");
         }
 
         public void Start()
         {
-            // If we already spawned it and it's alive — nothing to do
-            if (_proc is { HasExited: false }) return;
+            if (IsRunning) return;
 
-            // If API is already up (maybe started by another launcher instance) — don't spawn duplicates
-            if (IsHealthyNow())
+            // If port is already open, don't spawn duplicates (launcher might be racing)
+            if (IsPortOpen("127.0.0.1", Port, TimeSpan.FromMilliseconds(250)))
             {
-                _attachedToExisting = true;
                 LastHealthError = null;
                 return;
             }
-
-            _attachedToExisting = false;
 
             var apiDir = ResolveApiDir();
             var apiExe = Path.Combine(apiDir, "TradingBridgeApi.exe");
             var apiDll = Path.Combine(apiDir, "TradingBridgeApi.dll");
 
             if (!File.Exists(apiExe) && !File.Exists(apiDll))
-                throw new FileNotFoundException($"TradingBridgeApi not found. Looked in: {apiDir}",
+                throw new FileNotFoundException(
+                    $"TradingBridgeApi not found. Looked in: {apiDir}",
                     File.Exists(apiExe) ? apiExe : apiDll);
 
-            // Reset logs on each start
-            TryWriteText(StdOutLogPath, $"[{DateTime.Now:O}] === START ==={Environment.NewLine}");
-            TryWriteText(StdErrLogPath, $"[{DateTime.Now:O}] === START ==={Environment.NewLine}");
+            // Clear old logs on each start (optional, but makes it readable)
+            TryWriteText(StdOutLogPath, $"[{DateTime.Now:O}] === START ===\n");
+            TryWriteText(StdErrLogPath, $"[{DateTime.Now:O}] === START ===\n");
 
             var psi = new ProcessStartInfo
             {
@@ -86,10 +85,9 @@ namespace Axion.Desktop.Services
             // Bind to the same BaseUrl we will call
             psi.Environment["ASPNETCORE_URLS"] = BaseUrl;
 
-            // Keep consistent with your API config:
-            // If Swagger is disabled in Production in Program.cs, set Development here.
-            // Otherwise keep Production. Pick ONE.
-            psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+            // IMPORTANT: don't force Development if you're shipping Production builds;
+            // but leaving it is fine if you want Swagger/etc. Just keep consistent.
+            psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
 
             // Signals repo token is provided via env
             var signalsToken = Secrets.TryReadGitHubTokenForSignalsRepo(App.Install);
@@ -121,24 +119,14 @@ namespace Axion.Desktop.Services
 
         public void Stop()
         {
-            // If we didn't spawn it (we just "attached" to an existing API), don't kill someone else's process
-            if (_attachedToExisting)
-            {
-                _attachedToExisting = false;
-                LastHealthError = null;
-                return;
-            }
-
-            if (_proc is null || _proc.HasExited) return;
+            if (!IsRunning) return;
 
             try
             {
-                // Best-effort graceful first
-                try { _proc.CloseMainWindow(); } catch { }
-
-                // Give hosted services time to shut down
-                if (!_proc.WaitForExit(8000))
-                    _proc.Kill(entireProcessTree: true);
+                // API is console app => CloseMainWindow often does nothing
+                // Kill is the reliable way
+                _proc!.Kill(entireProcessTree: true);
+                _proc.WaitForExit(1500);
             }
             catch
             {
@@ -146,8 +134,6 @@ namespace Axion.Desktop.Services
             }
             finally
             {
-                try { _proc?.CancelOutputRead(); } catch { }
-                try { _proc?.CancelErrorRead(); } catch { }
                 _proc?.Dispose();
                 _proc = null;
             }
@@ -156,18 +142,13 @@ namespace Axion.Desktop.Services
         /// <summary>
         /// Wait until API responds 200 OK on /health.
         /// Also detects "process died immediately" and returns a meaningful error.
-        /// IMPORTANT: do NOT call Stop() just because this returns false.
         /// </summary>
         public async Task<bool> WaitUntilHealthyAsync(TimeSpan timeout, CancellationToken ct)
         {
-            // Clamp too-small timeouts (your UI sometimes passed 2s earlier)
-            if (timeout < TimeSpan.FromSeconds(15))
-                timeout = TimeSpan.FromSeconds(15);
-
             var stopAt = DateTime.UtcNow + timeout;
 
             // Per-request timeout; overall timeout is the loop.
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             while (DateTime.UtcNow < stopAt)
             {
@@ -176,7 +157,7 @@ namespace Axion.Desktop.Services
                 // If we started a process and it already exited — this is NOT "slow start"
                 if (_proc is not null && _proc.HasExited)
                 {
-                    var tail = SafeTail(StdErrLogPath, 80);
+                    var tail = SafeTail(StdErrLogPath, 40);
                     LastHealthError =
                         $"API process exited (code={_proc.ExitCode}). " +
                         $"See stderr log: {StdErrLogPath}\n" +
@@ -186,7 +167,7 @@ namespace Axion.Desktop.Services
 
                 try
                 {
-                    using var resp = await http.GetAsync($"{BaseUrl}/health", ct).ConfigureAwait(false);
+                    var resp = await http.GetAsync($"{BaseUrl}/health", ct);
                     if (resp.IsSuccessStatusCode)
                     {
                         LastHealthError = null;
@@ -200,15 +181,15 @@ namespace Axion.Desktop.Services
                     LastHealthError = ex.Message;
                 }
 
-                await Task.Delay(250, ct).ConfigureAwait(false);
+                await Task.Delay(250, ct);
             }
 
-            // Final diagnostic if still not healthy
-            if (!IsHealthyNow())
+            // Final diagnostic if port never opened
+            if (!IsPortOpen("127.0.0.1", Port, TimeSpan.FromMilliseconds(200)))
             {
                 LastHealthError =
-                    $"API not healthy within {timeout.TotalSeconds:0}s. " +
-                    $"Check logs:\nstdout: {StdOutLogPath}\nstderr: {StdErrLogPath}";
+                    $"Port {Port} is not listening. " +
+                    $"If API was started, check logs:\nstdout: {StdOutLogPath}\nstderr: {StdErrLogPath}";
             }
 
             return false;
@@ -216,16 +197,16 @@ namespace Axion.Desktop.Services
 
         public async Task<string?> TryGetVersionAsync(CancellationToken ct)
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             try
             {
-                var resp = await http.GetAsync($"{BaseUrl}/version", ct).ConfigureAwait(false);
+                var resp = await http.GetAsync($"{BaseUrl}/version", ct);
                 if (!resp.IsSuccessStatusCode) return null;
 
-                var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                using var doc = JsonDocument.Parse(json);
+                var json = await resp.Content.ReadAsStringAsync(ct);
 
+                using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String)
                     return v.GetString();
 
@@ -239,29 +220,29 @@ namespace Axion.Desktop.Services
 
         // -------------------- helpers --------------------
 
-        private bool IsHealthyNow()
-        {
-            try
-            {
-                using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(350) };
-                using var resp = http.GetAsync($"{BaseUrl}/health").GetAwaiter().GetResult();
-                return resp.IsSuccessStatusCode;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         private static string? TryGetAxionCacheDir()
         {
             try
             {
+                // if your InstallLayout exposes CacheDir, use it
                 return App.Install?.CacheDir;
+            }
+            catch { return null; }
+        }
+
+        private static bool IsPortOpen(string host, int port, TimeSpan timeout)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(timeout);
+                using var client = new TcpClient();
+                var t = client.ConnectAsync(host, port, cts.Token);
+                t.GetAwaiter().GetResult();
+                return client.Connected;
             }
             catch
             {
-                return null;
+                return false;
             }
         }
 
