@@ -46,6 +46,10 @@ AxionPaths.InitFromEnvOrDefaults();
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 🔒 HARD PORT — Axion contract
+builder.WebHost.UseUrls("http://localhost:5197");
+
+
 // (optional) expose resolved paths in config for debugging/DI usage
 builder.Configuration["Axion:AppDataRoot"] = AxionPaths.AppDataRoot;
 builder.Configuration["Axion:AllowlistPath"] = AxionPaths.AllowlistPath;
@@ -248,12 +252,6 @@ builder.Services.AddSingleton<IStrategySignalsHandler, OpenDoorSignalsHandler>()
 
 builder.Services.AddSingleton<StrategyHandlerRegistry>();
 builder.Services.AddSingleton<StrategySignalService>();
-
-var urlsFromEnv = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-if (!string.IsNullOrWhiteSpace(urlsFromEnv))
-{
-    builder.WebHost.UseUrls(urlsFromEnv);
-}
 
 
 var app = builder.Build();
